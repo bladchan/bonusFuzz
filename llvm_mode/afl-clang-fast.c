@@ -126,6 +126,11 @@ static void edit_params(u32 argc, char** argv) {
 
      http://clang.llvm.org/docs/SanitizerCoverage.html#tracing-pcs-with-guards */
 
+  cc_params[cc_par_cnt++] = "-Xclang";
+  cc_params[cc_par_cnt++] = "-load";
+  cc_params[cc_par_cnt++] = "-Xclang";
+  cc_params[cc_par_cnt++] = alloc_printf("%s/split-switches-pass.so", obj_path);
+
 #ifdef USE_TRACE_PC
   cc_params[cc_par_cnt++] = "-fsanitize-coverage=trace-pc-guard";
 #ifndef __ANDROID__
