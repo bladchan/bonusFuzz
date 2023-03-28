@@ -37,15 +37,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <unordered_map>
 
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 
 using namespace llvm;
+
+#include "afl-bonus.h"
+
+using namespace std;
 
 namespace {
 
@@ -115,7 +121,69 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   int inst_blocks = 0;
 
-  for (auto &F : M)
+  for (auto &F : M) {
+
+    CFGraph cfg;
+    cfg.bb_num = 0;
+    cfg.edge_num = 0;
+    int bb_idx = 0;
+
+    for (auto& BB : F) {
+
+        bb_idx = insert_bb(&cfg, &BB, 0);
+
+        BBNode* bb = &cfg.list[bb_idx];
+        StringRef bb_name = bb->bb->getName();
+
+        if (bb_name.empty()) {
+            string Str;
+            string temp;
+            raw_string_ostream OS(Str);
+            bb->bb->printAsOperand(OS, false);
+            string func_name = bb->bb->getParent()->getName().str();
+            temp = func_name + OS.str();
+            bb->bb_name = temp;
+            bb->bb->setName(StringRef(temp));
+            
+        } 
+
+        BranchInst* BI = dyn_cast<BranchInst>(BB.getTerminator());
+
+        if (!BI) continue; // It is impossible because we split switches to if...then
+
+        if (!BI->getNumSuccessors()) continue;  // RET basicblock
+
+        // we calculate the sum of the functions called in this basicblock!
+        for (auto& INST : BB) {
+
+            if (CallInst* CI = dyn_cast<CallInst>(&INST)) {
+
+                if (Function* CF = CI->getCalledFunction()) {
+
+                    StringRef F_name = CF->getName();
+                    if (!F_name.find("llvm.")) continue;
+                    cfg.list[bb_idx].calledFunNum++;
+
+                }
+            }
+        }
+
+        // CFG buildinig ...
+
+        for (auto SI = succ_begin(&BB), E = succ_end(&BB); SI != E; SI++) {
+
+            BasicBlock* SuccBB = *SI;
+
+            int suc_bb_idx = insert_bb(&cfg, SuccBB, 0);
+
+            insert_edge(&cfg, SuccBB, bb_idx, suc_bb_idx);
+
+        }
+
+    } // end building CFG
+
+    loop_detect(&cfg);
+
     for (auto &BB : F) {
 
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
@@ -159,7 +227,7 @@ bool AFLCoverage::runOnModule(Module &M) {
       inst_blocks++;
 
     }
-
+  }
   /* Say something nice. */
 
   if (!be_quiet) {
@@ -186,7 +254,7 @@ static void registerAFLPass(const PassManagerBuilder &,
 
 
 static RegisterStandardPasses RegisterAFLPass(
-    PassManagerBuilder::EP_ModuleOptimizerEarly, registerAFLPass);
+    PassManagerBuilder::EP_OptimizerLast, registerAFLPass);
 
 static RegisterStandardPasses RegisterAFLPass0(
     PassManagerBuilder::EP_EnabledOnOptLevel0, registerAFLPass);
