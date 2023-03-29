@@ -34,6 +34,7 @@
 #include "../types.h"
 #include "../debug.h"
 #include "../alloc-inl.h"
+#include "./afl-bonus.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -362,3 +363,5 @@ int main(int argc, char** argv) {
   return 0;
 
 }
+
+

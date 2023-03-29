@@ -44,14 +44,15 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/CFG.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 
 using namespace llvm;
 
-#include "afl-bonus.h"
-
 using namespace std;
+
+#include "afl-bonus.h"
 
 namespace {
 
@@ -184,6 +185,11 @@ bool AFLCoverage::runOnModule(Module &M) {
 
     loop_detect(&cfg);
 
+    // create DAG
+    delete_loop(&cfg);
+
+    update_bonus(&cfg);
+
     for (auto &BB : F) {
 
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
@@ -194,6 +200,16 @@ bool AFLCoverage::runOnModule(Module &M) {
       /* Make up cur_loc */
 
       unsigned int cur_loc = AFL_R(MAP_SIZE);
+
+      // store bb_id
+
+      int bb_idx = search_bb(&cfg, &BB);
+      if (bb_idx == -1) {
+          // impossible?!
+          errs() << "No find?!" << "\n";
+          exit(-1);
+      }
+      cfg.list[bb_idx].cur_loc = cur_loc;
 
       ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc);
 
