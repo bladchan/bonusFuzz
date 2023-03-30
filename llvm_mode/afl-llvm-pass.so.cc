@@ -81,7 +81,9 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   LLVMContext &C = M.getContext();
 
+  Type* VoidTy = Type::getVoidTy(C);
   IntegerType *Int8Ty  = IntegerType::getInt8Ty(C);
+  IntegerType* Int16Ty = IntegerType::getInt16Ty(C);
   IntegerType *Int32Ty = IntegerType::getInt32Ty(C);
 
   /* Show a banner */
@@ -118,6 +120,10 @@ bool AFLCoverage::runOnModule(Module &M) {
       M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
       0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
 
+  GlobalVariable *AFLPrevBB = new GlobalVariable(
+      M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_bb",
+      0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
+
   /* Instrument all the things! */
 
   int inst_blocks = 0;
@@ -128,6 +134,8 @@ bool AFLCoverage::runOnModule(Module &M) {
     cfg.bb_num = 0;
     cfg.edge_num = 0;
     int bb_idx = 0;
+
+    /* Create CFG */
 
     for (auto& BB : F) {
 
@@ -166,6 +174,7 @@ bool AFLCoverage::runOnModule(Module &M) {
                     cfg.list[bb_idx].calledFunNum++;
 
                 }
+
             }
         }
 
@@ -189,6 +198,8 @@ bool AFLCoverage::runOnModule(Module &M) {
     delete_loop(&cfg);
 
     update_bonus(&cfg);
+
+    /* AFL's coverage instrumentation */
 
     for (auto &BB : F) {
 
@@ -240,10 +251,75 @@ bool AFLCoverage::runOnModule(Module &M) {
           IRB.CreateStore(ConstantInt::get(Int32Ty, cur_loc >> 1), AFLPrevLoc);
       Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
+      /* Save bb_id */
+
+      StoreInst* SI = IRB.CreateStore(ConstantInt::get(Int32Ty, cur_loc), AFLPrevBB);
+      SI->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
       inst_blocks++;
 
     }
+
+    /* Context-aware instrumentation */
+
+#if LLVM_VERSION_MAJOR >= 9
+    FunctionCallee
+#else
+    Constant*
+#endif
+        b = M.getOrInsertFunction("__afl_brlog_hook", VoidTy, Int8Ty, Int16Ty,
+            Int16Ty, Int16Ty, Int16Ty
+#if LLVM_VERSION_MAJOR < 5
+            ,
+            NULL
+#endif
+        );
+
+#if LLVM_VERSION_MAJOR < 9
+    Function* brlogHookIns = cast<Function>(b);
+#else
+    FunctionCallee brlogHookIns = b;
+#endif
+
+    for (auto& BB : F) {
+
+        int bb_idx = search_bb(&cfg, &BB);
+
+        if (bb_idx == -1) {
+            errs() << "Really???" << "\n";
+            exit(-1);
+        }
+
+        BranchInst* BI = dyn_cast<BranchInst>(BB.getTerminator());
+
+        if (!BI || BI->isUnconditional() || BI->getNumSuccessors() < 2) continue;
+
+        BasicBlock* bb_left = dyn_cast<BasicBlock>(BI->getOperand(1));
+        BasicBlock* bb_right = dyn_cast<BasicBlock>(BI->getOperand(2));
+
+        int bb_idx_l = search_bb(&cfg, bb_left);
+        int bb_idx_r = search_bb(&cfg, bb_right);
+        if (bb_idx_l == -1 || bb_idx_r == -1) {
+            errs() << "Really???" << "\n";
+            exit(-1);
+        }
+
+
+        IRBuilder<> IRB_br(BB.getTerminator());
+
+        std::vector<Value*> args;
+        args.push_back(BI->getOperand(0));
+        args.push_back(ConstantInt::get(Int16Ty, cfg.list[bb_idx_l].cur_loc));
+        args.push_back(ConstantInt::get(Int16Ty, cfg.list[bb_idx_r].cur_loc));
+        args.push_back(ConstantInt::get(Int16Ty, cfg.list[bb_idx_l].bonus));
+        args.push_back(ConstantInt::get(Int16Ty, cfg.list[bb_idx_r].bonus));
+        
+        IRB_br.CreateCall(brlogHookIns, args);
+
+    }
+
   }
+
   /* Say something nice. */
 
   if (!be_quiet) {

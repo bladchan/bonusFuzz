@@ -5,10 +5,7 @@
 #define MAX_VERTEX_NUM 10000
 #define MAX_LOOP_CNT 10
 
-#define EDGE_MAP_W 65535
-#define EDGE_MAP_H 32
-
-#define AFL_BONUS_DEBUG
+//#define AFL_BONUS_DEBUG
 
 typedef struct ArcNode {
 
@@ -36,6 +33,7 @@ typedef struct VNode {
 
 	int loop_pre_bbs[MAX_LOOP_CNT];
 	unsigned int loop_cnt;
+	uint8_t is_loop;
 
 }BBNode;
 
@@ -46,21 +44,6 @@ typedef struct ALGraph {
 	int bb_num, edge_num;
 
 }CFGraph;
-
-struct edge_info {
-	
-	u16 hits;
-	u16 pre_bb_id;
-
-};
-
-struct edge_map{
-
-	struct edge_info trace[EDGE_MAP_W][EDGE_MAP_H];
-	struct edge_info untouch[EDGE_MAP_W][EDGE_MAP_H];
-
-};
-
 
 void debug(CFGraph *cfg) {
 
@@ -201,6 +184,7 @@ void dfs(CFGraph* cfg, Edge* edge, int pre_bb_idx) {
 
 	if (bb->visited) {
 		// loop detected
+		bb->is_loop = 1;
 		if (bb->loop_cnt >= MAX_LOOP_CNT) {
 			return;
 		}
@@ -273,7 +257,6 @@ void delete_loop(CFGraph* cfg) {
 	}
 
 }
-
 
 void dom_dfs(CFGraph* cfg, Edge* edge, int pre_bb_idx, set<int>& record) {
 

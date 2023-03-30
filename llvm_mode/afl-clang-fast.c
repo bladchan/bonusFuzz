@@ -34,7 +34,6 @@
 #include "../types.h"
 #include "../debug.h"
 #include "../alloc-inl.h"
-#include "./afl-bonus.h"
 
 #include <stdio.h>
 #include <unistd.h>

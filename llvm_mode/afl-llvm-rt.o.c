@@ -42,6 +42,8 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 
+#include "afl-edgelog.h"
+
 /* This is a somewhat ugly hack for the experimental 'trace-pc-guard' mode.
    Basically, we need to make sure that the forkserver is initialized after
    the LLVM-generated runtime initialization pass, not before. */
@@ -60,7 +62,11 @@
 u8  __afl_area_initial[MAP_SIZE];
 u8* __afl_area_ptr = __afl_area_initial;
 
+struct edge_map  __afl_edge_map_initial;
+struct edge_map* __afl_edge_map = &__afl_edge_map_initial;
+
 __thread u32 __afl_prev_loc;
+__thread u32 __afl_prev_bb;
 
 
 /* Running in persistent mode? */
@@ -133,7 +139,7 @@ static void __afl_start_forkserver(void) {
     if (!child_stopped) {
 
       /* Once woken up, create a clone of our process. */
-
+        memset((void*)__afl_edge_map, 0, sizeof(struct edge_map));
       child_pid = fork();
       if (child_pid < 0) _exit(1);
 
@@ -312,3 +318,76 @@ void __sanitizer_cov_trace_pc_guard_init(uint32_t* start, uint32_t* stop) {
   }
 
 }
+
+
+/* Runtime function for bonusFuzz */
+
+void __afl_trace_hook(uint16_t cur) {
+
+    uint16_t edge_idx = (__afl_prev_bb >> 1) ^ cur;
+
+    uint8_t size = __afl_edge_map->headers[edge_idx].size1;
+
+    if (size >= EDGE_MAP_H) return;
+
+    for (uint16_t i = 0; i < size; i++) {
+
+        if (__afl_edge_map->trace[edge_idx][i].pre_bb_id == __afl_prev_bb) {
+            __afl_edge_map->trace[edge_idx][i].hits++;
+            return;
+        }
+
+    }
+
+    __afl_edge_map->trace[edge_idx][size].pre_bb_id = __afl_prev_bb;
+    __afl_edge_map->trace[edge_idx][size++].hits = 1;
+
+    __afl_edge_map->headers[edge_idx].size1 = size;
+
+}
+
+void __afl_untouch_hook(uint16_t neighbor, uint16_t bonus) {
+
+    uint16_t edge_idx = (__afl_prev_bb >> 1) ^ neighbor;
+
+    uint8_t size = __afl_edge_map->headers[edge_idx].size2;
+
+    if (size >= EDGE_MAP_H) return;
+
+    for (uint16_t i = 0; i < size; i++) {
+
+        if (__afl_edge_map->untouch[edge_idx][i].pre_bb_id == __afl_prev_bb) {
+            __afl_edge_map->untouch[edge_idx][i].hits++;
+            return;
+        }
+
+    }
+
+    __afl_edge_map->untouch[edge_idx][size].pre_bb_id = __afl_prev_bb;
+    __afl_edge_map->untouch[edge_idx][size].hits = 1;
+    __afl_edge_map->untouch[edge_idx][size++].bonus = bonus;
+
+    __afl_edge_map->headers[edge_idx].size2 = size;
+
+}
+
+void __afl_brlog_hook(uint8_t flag, uint16_t left, uint16_t right, uint16_t bonus_l, uint16_t bonus_r) {
+
+    if (flag) {
+        __afl_trace_hook(left);
+        __afl_untouch_hook(right, bonus_r);
+    }
+    else {
+        __afl_trace_hook(right);
+        __afl_untouch_hook(left, bonus_l);
+    }
+
+}
+
+/*
+__attribute__((destructor(CONST_PRIO))) void show_result(void) {
+
+    debug(__afl_edge_map);
+
+}
+*/
