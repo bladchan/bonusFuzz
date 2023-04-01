@@ -90,6 +90,8 @@ static void __afl_map_shm(void) {
 
     __afl_area_ptr = shmat(shm_id, NULL, 0);
 
+    __afl_edge_map = (struct edge_map*)(u8*)(__afl_area_ptr + MAP_SIZE);
+
     /* Whooooops. */
 
     if (__afl_area_ptr == (void *)-1) _exit(1);
@@ -333,14 +335,12 @@ void __afl_trace_hook(uint16_t cur) {
     for (uint16_t i = 0; i < size; i++) {
 
         if (__afl_edge_map->trace[edge_idx][i].pre_bb_id == __afl_prev_bb) {
-            __afl_edge_map->trace[edge_idx][i].hits++;
             return;
         }
 
     }
 
-    __afl_edge_map->trace[edge_idx][size].pre_bb_id = __afl_prev_bb;
-    __afl_edge_map->trace[edge_idx][size++].hits = 1;
+    __afl_edge_map->trace[edge_idx][size++].pre_bb_id = __afl_prev_bb;
 
     __afl_edge_map->headers[edge_idx].size1 = size;
 
@@ -357,14 +357,12 @@ void __afl_untouch_hook(uint16_t neighbor, uint16_t bonus) {
     for (uint16_t i = 0; i < size; i++) {
 
         if (__afl_edge_map->untouch[edge_idx][i].pre_bb_id == __afl_prev_bb) {
-            __afl_edge_map->untouch[edge_idx][i].hits++;
             return;
         }
 
     }
 
     __afl_edge_map->untouch[edge_idx][size].pre_bb_id = __afl_prev_bb;
-    __afl_edge_map->untouch[edge_idx][size].hits = 1;
     __afl_edge_map->untouch[edge_idx][size++].bonus = bonus;
 
     __afl_edge_map->headers[edge_idx].size2 = size;

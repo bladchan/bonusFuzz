@@ -3,8 +3,6 @@
 
 struct edge_info {
 
-	unsigned hits : 15;
-	unsigned is_free : 1;
 	u16      pre_bb_id;
 	u8       bonus;
 
