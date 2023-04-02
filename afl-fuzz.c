@@ -3152,7 +3152,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   if (dumb_mode != 1 && !no_forkserver && !forksrv_pid)
     init_forkserver(argv);
 
-  if (!bonus_fsrv_pid) {
+  if (bonus_mode && !bonus_fsrv_pid) {
       init_forkserver_bonus(argv);
   }
 
