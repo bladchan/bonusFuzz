@@ -42,7 +42,7 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 
-#include "afl-edgelog.h"
+#include "../afl-edgelog.h"
 
 /* This is a somewhat ugly hack for the experimental 'trace-pc-guard' mode.
    Basically, we need to make sure that the forkserver is initialized after
@@ -141,7 +141,7 @@ static void __afl_start_forkserver(void) {
     if (!child_stopped) {
 
       /* Once woken up, create a clone of our process. */
-        memset((void*)__afl_edge_map, 0, sizeof(struct edge_map));
+      
       child_pid = fork();
       if (child_pid < 0) _exit(1);
 

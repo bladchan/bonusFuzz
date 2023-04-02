@@ -42,7 +42,7 @@
 #include "debug.h"
 #include "alloc-inl.h"
 #include "hash.h"
-#include "llvm_mode/afl-edgelog.h"
+#include "afl-edgelog.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -1285,6 +1285,9 @@ static void update_bitmap_score(struct queue_entry* q) {
   u32 i;
   u64 fav_factor = q->exec_us * q->len;
 
+  u8 is_fast;
+  u8 is_bonus;
+
   /* For every byte set in trace_bits[], see if there is a previous winner,
      and how it compares to us. */
 
@@ -1294,9 +1297,37 @@ static void update_bitmap_score(struct queue_entry* q) {
 
        if (top_rated[i]) {
 
+           if (bonus_mode) {
+               if (q->untouch_edge_num > top_rated[i]->untouch_edge_num 
+                   && q->total_bonus > top_rated[i]->total_bonus) {
+                   is_bonus = 1;
+               }
+               else {
+                   
+                   if ((float)q->total_bonus / q->untouch_edge_num >
+                       (float)top_rated[i]->total_bonus / top_rated[i]->untouch_edge_num) {
+                       is_bonus = 1;
+                   }
+                   else {
+                       is_bonus = 0;
+                   }
+               }
+           }
+           else {
+               is_bonus = 0;
+           }
+           
+
          /* Faster-executing or smaller test cases are favored. */
 
-         if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
+         if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) {
+             is_fast = 0;
+         }
+         else {
+             is_fast = 1;
+         }
+
+         if (!is_bonus && !is_fast) continue;
 
          /* Looks like we're going to win. Decrease ref count for the
             previous winner, discard its trace_bits[] if necessary. */
@@ -3287,6 +3318,7 @@ abort_calibration:
 
               q->untouch_edge_num++;
               q->total_bonus += map->untouch[i][j].bonus;
+
           }
 
       }
