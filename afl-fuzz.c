@@ -3322,9 +3322,9 @@ abort_calibration:
 
       if (!map->headers[i].size2) continue;
 
-      u8 is_traced = 0;
-
       for (int j = 0; j < map->headers[i].size2; j++) {
+
+          u8 is_traced = 0;
 
           for (int k = 0; k < map->headers[i].size1; k++) {
               if (map->trace[i][k].pre_bb_id == map->untouch[i][j].pre_bb_id) {
@@ -3372,7 +3372,7 @@ abort_calibration:
       prev->next = tmp_q->untouch;
 
       p = tmp_q->untouch;
-      u8 is_delete;
+      u8 is_delete = 0;
 
       while (p) {
           
@@ -3389,6 +3389,8 @@ abort_calibration:
                       p = p->next;
                       if (prev->next == tmp_q->untouch)
                           tmp_q->untouch = p;
+                      
+                      prev->next->next = NULL;
                       ck_free(prev->next);
                       prev->next = p;
                       is_delete = 1;
@@ -3396,6 +3398,7 @@ abort_calibration:
                       break;
 
                   }
+
               }
           }
 
@@ -3407,6 +3410,7 @@ abort_calibration:
 
       }
 
+      t->next = NULL;
       ck_free(t);
       tmp_q = tmp_q->next;
 
@@ -3416,6 +3420,45 @@ abort_calibration:
 
 }
 
+
+static void calibrate_queue(char** argv) {
+
+    struct queue_entry* q = queue;
+
+    stage_name = "calibrate queue";
+    stage_cur  = 0;
+    stage_max = queued_paths - 1;
+
+    while (q) {
+
+        u8* use_mem;
+        s32 fd;
+
+        stage_cur++;
+
+        fd = open(q->fname, O_RDONLY);
+        if (fd < 0) PFATAL("Unable to open '%s'", q->fname);
+
+        use_mem = ck_alloc_nozero(q->len);
+
+        if (read(fd, use_mem, q->len) != q->len)
+            FATAL("Short read from '%s'", q->fname);
+
+        close(fd);
+
+        write_to_testcase(use_mem, q->len);
+        run_target(argv, exec_tmout);
+
+        ck_free(use_mem);
+        update_bitmap_score(q);
+
+        show_stats();
+
+        q = q->next;
+
+    }
+
+}
 
 /* Examine map coverage. Called once, for first test case. */
 
@@ -8811,6 +8854,10 @@ int main(int argc, char** argv) {
       current_entry     = 0;
       cur_skipped_paths = 0;
       queue_cur         = queue;
+
+      /* New cycle, update bitmap score! */
+
+      calibrate_queue(argv);
 
       while (seek_to) {
         current_entry++;
