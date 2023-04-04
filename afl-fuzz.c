@@ -1298,20 +1298,28 @@ static void update_bitmap_score(struct queue_entry* q) {
        if (top_rated[i]) {
 
            if (bonus_mode) {
+               
                if (q->untouch_edge_num > top_rated[i]->untouch_edge_num 
                    && q->total_bonus > top_rated[i]->total_bonus) {
                    is_bonus = 1;
                }
                else {
                    
-                   if ((float)q->total_bonus / q->untouch_edge_num >
-                       (float)top_rated[i]->total_bonus / top_rated[i]->untouch_edge_num) {
-                       is_bonus = 1;
-                   }
+                   if (!q->untouch_edge_num) is_bonus = 0;
                    else {
-                       is_bonus = 0;
+
+                       if (q->total_bonus / q->untouch_edge_num >
+                           2 * top_rated[i]->total_bonus / top_rated[i]->untouch_edge_num) {
+                           is_bonus = 1;
+                       }
+                       else {
+                           is_bonus = 0;
+                       }
+
                    }
+
                }
+
            }
            else {
                is_bonus = 0;
@@ -1387,23 +1395,52 @@ static void cull_queue(void) {
   /* Let's see if anything in the bitmap isn't captured in temp_v.
      If yes, and if it has a top_rated[] contender, let's use it. */
 
-  for (i = 0; i < MAP_SIZE; i++)
-    if (top_rated[i] && (temp_v[i >> 3] & (1 << (i & 7)))) {
+  if (bonus_mode) {
 
-      u32 j = MAP_SIZE >> 3;
+      for (i = 0; i < MAP_SIZE; i++) {
+        
+          if (top_rated[i]) {
 
-      /* Remove all bits belonging to the current entry from temp_v. */
+              if (top_rated[i]->was_fuzzed) continue;
 
-      while (j--) 
-        if (top_rated[i]->trace_mini[j])
-          temp_v[j] &= ~top_rated[i]->trace_mini[j];
+              u8 was_favored_already = top_rated[i]->favored;
 
-      top_rated[i]->favored = 1;
-      queued_favored++;
+              top_rated[i]->favored = 1;
 
-      if (!top_rated[i]->was_fuzzed) pending_favored++;
+              if (!was_favored_already) {
 
-    }
+                  queued_favored++;
+
+                  if (!top_rated[i]->was_fuzzed) pending_favored++;
+
+              }
+
+          }
+
+      }
+
+  }
+  else {
+
+      for (i = 0; i < MAP_SIZE; i++)
+          if (top_rated[i] && (temp_v[i >> 3] & (1 << (i & 7)))) {
+
+              u32 j = MAP_SIZE >> 3;
+
+              /* Remove all bits belonging to the current entry from temp_v. */
+
+              while (j--)
+                  if (top_rated[i]->trace_mini[j])
+                      temp_v[j] &= ~top_rated[i]->trace_mini[j];
+
+              top_rated[i]->favored = 1;
+              queued_favored++;
+
+              if (!top_rated[i]->was_fuzzed) pending_favored++;
+
+          }
+
+  }
 
   q = queue;
 
