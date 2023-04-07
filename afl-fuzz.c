@@ -270,6 +270,8 @@ struct queue_entry {
   struct edge_node* untouch;
   u32 untouch_edge_num;
   u64 total_bonus;
+  u32 untouch_removed;
+  u64 bonus_removed;
 
   struct queue_entry *next,           /* Next element, if any             */
                      *next_100;       /* 100 elements ahead               */
@@ -3384,6 +3386,8 @@ abort_calibration:
                       
                       tmp_q->total_bonus -= p->bonus;
                       tmp_q->untouch_edge_num--;
+                      tmp_q->untouch_removed++;
+                      tmp_q->bonus_removed += p->bonus;
 
                       // delete this node!
                       p = p->next;
@@ -4254,6 +4258,43 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
 }
 
 
+static void write_queue_info() {
+
+    u8* fn = alloc_printf("%s/fuzzer_qinfo", out_dir);
+    s32 fd;
+    u32 id = 0;
+    FILE* f;
+
+    struct queue_entry* q = queue;
+
+    fd = open(fn, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+    if (fd < 0) PFATAL("Unable to create '%s'", fn);
+
+    ck_free(fn);
+
+    f = fdopen(fd, "w");
+
+    if (!f) PFATAL("fdopen() failed");
+
+
+    while (q) {
+
+        fprintf(f, "seed #%d:\n", ++id);
+        fprintf(f, "    Untouch edge:  %d\n", q->untouch_edge_num);
+        fprintf(f, "    Current bonus: %lld\n", q->total_bonus);
+        fprintf(f, "    Untouch removed: %d\n", q->untouch_removed);
+        fprintf(f, "    Bonus removed: %lld\n", q->bonus_removed);
+        fprintf(f, "\n");
+        
+        q = q->next;
+
+    }
+
+    fclose(f);
+
+}
+
 /* Update the plot file if there is a reason to. */
 
 static void maybe_update_plot_file(double bitmap_cvg, double eps) {
@@ -4737,6 +4778,7 @@ static void show_stats(void) {
 
     last_stats_ms = cur_ms;
     write_stats_file(t_byte_ratio, stab_ratio, avg_exec);
+    if(bonus_mode) write_queue_info();
     save_auto();
     write_bitmap();
 
@@ -5131,7 +5173,8 @@ static void show_stats(void) {
 
   } else SAYF("\r");
 
-  SAYF("\nUntouch: %d; Bonus: %lld\n", queue_cur->untouch_edge_num, queue_cur->total_bonus);
+  SAYF("\nUntouch: %d; Bonus: %lld, Untouch removed: %d\n", queue_cur->untouch_edge_num,
+      queue_cur->total_bonus, queue_cur->untouch_removed);
 
   /* Hallelujah! */
 
@@ -8857,7 +8900,7 @@ int main(int argc, char** argv) {
 
       /* New cycle, update bitmap score! */
 
-      calibrate_queue(argv);
+      if (bonus_mode) calibrate_queue(argv);
 
       while (seek_to) {
         current_entry++;
@@ -8889,6 +8932,8 @@ int main(int argc, char** argv) {
     }
 
     skipped_fuzz = fuzz_one(use_argv);
+
+    if (!skipped_fuzz && bonus_mode) calibrate_queue(argv);
 
     if (!stop_soon && sync_id && !skipped_fuzz) {
       
