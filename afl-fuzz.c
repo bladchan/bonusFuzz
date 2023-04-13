@@ -56,6 +56,7 @@
 #include <termios.h>
 #include <dlfcn.h>
 #include <sched.h>
+#include <math.h>
 
 #include <sys/wait.h>
 #include <sys/time.h>
@@ -136,7 +137,8 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            run_over10m,               /* Run time over 10 minutes?        */
            persistent_mode,           /* Running in persistent mode?      */
            deferred_mode,             /* Deferred forkserver mode?        */
-           fast_cal;                  /* Try to calibrate faster?         */
+           fast_cal,                  /* Try to calibrate faster?         */
+           state_of_fuzz = 0;
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
@@ -149,6 +151,8 @@ static s32 forksrv_pid,               /* PID of the fork server           */
            out_dir_fd = -1;           /* FD of the lock file              */
 
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
+
+EXP_ST u16* bonus_bits;
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -260,7 +264,10 @@ struct queue_entry {
       depth;                          /* Path depth                       */
 
   u8* trace_mini;                     /* Trace bytes, if kept             */
+  u8* untouch_mini;
   u32 tc_ref;                         /* Trace bytes ref count            */
+  float bonus;
+  u8  state;
 
   struct queue_entry *next,           /* Next element, if any             */
                      *next_100;       /* 100 elements ahead               */
@@ -288,6 +295,15 @@ static struct extra_data* a_extras;   /* Automatically selected extras    */
 static u32 a_extras_cnt;              /* Total number of tokens available */
 
 static u8* (*post_handler)(u8* buf, u32* len);
+
+struct untouch_info {
+    u64 cnt;
+    u16 bonus;
+};
+
+static struct untouch_info untouch_edges[MAP_SIZE];
+u64 total_untouch_cnt = 0;
+u64 total_untouch = 0;
 
 /* Interesting values, as per config.h */
 
@@ -334,6 +350,12 @@ enum {
   /* 03 */ FAULT_ERROR,
   /* 04 */ FAULT_NOINST,
   /* 05 */ FAULT_NOBITS
+};
+
+enum {
+  /* 00 */ INIT,
+  /* 01 */ EXPLORATION,
+  /* 02 */ EXPLOITATION
 };
 
 
@@ -848,6 +870,7 @@ EXP_ST void destroy_queue(void) {
     n = q->next;
     ck_free(q->fname);
     ck_free(q->trace_mini);
+    ck_free(q->untouch_mini);
     ck_free(q);
     q = n;
 
@@ -1332,6 +1355,24 @@ static void cull_queue(void) {
 
   while (q) {
     q->favored = 0;
+    q->bonus = 0;
+
+    u64 avg = total_untouch_cnt / total_untouch;
+
+    for (i = 0; i < MAP_SIZE; i++) {
+
+        if ((q->untouch_mini[i >> 3] & (1 << (i & 7))) != 0) {
+
+            if (!untouch_edges[i].bonus) continue;
+
+            float prob = (float)untouch_edges[i].cnt / total_untouch_cnt;
+
+            q->bonus += log(untouch_edges[i].bonus) * ((float)1 / total_untouch < prob ? prob : 0);
+
+        }
+
+    }
+
     q = q->next;
   }
 
@@ -1377,7 +1418,7 @@ EXP_ST void setup_shm(void) {
   memset(virgin_tmout, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
 
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 2 * MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -1395,6 +1436,8 @@ EXP_ST void setup_shm(void) {
   ck_free(shm_str);
 
   trace_bits = shmat(shm_id, NULL, 0);
+
+  bonus_bits = (u16*)(u8*)(trace_bits + MAP_SIZE);
   
   if (trace_bits == (void *)-1) PFATAL("shmat() failed");
 
@@ -2302,7 +2345,7 @@ static u8 run_target(char** argv, u32 timeout) {
      must prevent any earlier operations from venturing into that
      territory. */
 
-  memset(trace_bits, 0, MAP_SIZE);
+  memset(trace_bits, 0, MAP_SIZE + 2 * MAP_SIZE);
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -2715,6 +2758,57 @@ abort_calibration:
   stage_max  = old_sm;
 
   if (!first_run) show_stats();
+
+  for (int i = 0; i < MAP_SIZE; i++) {
+
+      if (bonus_bits[i]) {
+
+          if (untouch_edges[i].bonus) {
+
+              untouch_edges[i].cnt++;
+              total_untouch_cnt++;
+
+          }
+          else {
+
+              if (!untouch_edges[i].cnt) {
+
+                  // not appear in history
+                  untouch_edges[i].bonus = bonus_bits[i];
+                  untouch_edges[i].cnt = 1;
+                  total_untouch_cnt++;
+                  total_untouch++;
+
+              }
+              else {
+
+                  // ignore it!
+
+              }
+
+          }
+
+      }
+
+      if (trace_bits[i] && untouch_edges[i].bonus) {
+          untouch_edges[i].bonus = 0;
+          total_untouch_cnt -= untouch_edges[i].cnt;
+          total_untouch--;
+      }
+
+  }
+
+  q->untouch_mini = ck_alloc(MAP_SIZE >> 3);
+
+  u32  i = 0;
+  u16* src = bonus_bits;
+
+  while (i < MAP_SIZE) {
+
+      if (*(src++)) q->untouch_mini[i >> 3] |= 1 << (i & 7);
+      i++;
+
+  }
 
   return fault;
 
@@ -4392,6 +4486,8 @@ static void show_stats(void) {
 
   } else SAYF("\r");
 
+  SAYF("\nWeighted bonus: %f\nTotal Untouch Cnt: %llu\nTotal Untouch: %llu\nState:%u\n", queue_cur->bonus, total_untouch_cnt, total_untouch, state_of_fuzz);
+
   /* Hallelujah! */
 
   fflush(0);
@@ -4681,6 +4777,17 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
      skip_requested = 0;
      cur_skipped_paths++;
      return 1;
+
+  }
+
+  for (int i = 0; i < MAP_SIZE; i++) {
+
+      if (!bonus_bits[i]) continue;
+
+      if (untouch_edges[i].bonus && !trace_bits[i]) {
+          untouch_edges[i].cnt++;
+          total_untouch_cnt++;
+      }
 
   }
 
@@ -5114,6 +5221,8 @@ static u8 fuzz_one(char** argv) {
    * TRIMMING *
    ************/
 
+  if (state_of_fuzz == EXPLORATION) goto skip_trim;
+
   if (!dumb_mode && !queue_cur->trim_done) {
 
     u8 res = trim_case(argv, queue_cur, in_buf);
@@ -5134,6 +5243,8 @@ static u8 fuzz_one(char** argv) {
 
   }
 
+skip_trim:
+
   memcpy(out_buf, in_buf, len);
 
   /*********************
@@ -5141,6 +5252,10 @@ static u8 fuzz_one(char** argv) {
    *********************/
 
   orig_perf = perf_score = calculate_score(queue_cur);
+
+  if (state_of_fuzz == EXPLOITATION) {
+      queue_cur->state = 2;
+  }
 
   /* Skip right away if -d is given, if we have done deterministic fuzzing on
      this entry ourselves (was_fuzzed), or if it has gone through deterministic
@@ -5154,6 +5269,8 @@ static u8 fuzz_one(char** argv) {
 
   if (master_max && (queue_cur->exec_cksum % master_max) != master_id - 1)
     goto havoc_stage;
+
+  goto havoc_stage;
 
   doing_det = 1;
 
@@ -6143,6 +6260,8 @@ havoc_stage:
 
   }
 
+  if (state_of_fuzz == EXPLORATION) stage_max = 16 * (UR(4) + 1);
+
   if (stage_max < HAVOC_MIN) stage_max = HAVOC_MIN;
 
   temp_len = len;
@@ -6549,7 +6668,7 @@ havoc_stage:
 
     if (queued_paths != havoc_queued) {
 
-      if (perf_score <= HAVOC_MAX_MULT * 100) {
+      if (perf_score <= HAVOC_MAX_MULT * 100 && state_of_fuzz == EXPLOITATION) {
         stage_max  *= 2;
         perf_score *= 2;
       }
@@ -6584,7 +6703,7 @@ havoc_stage:
 retry_splicing:
 
   if (use_splicing && splice_cycle++ < SPLICE_CYCLES &&
-      queued_paths > 1 && queue_cur->len > 1) {
+      queued_paths > 1 && queue_cur->len > 1 && state_of_fuzz != EXPLORATION) {
 
     struct queue_entry* target;
     u32 tid, split_at;
@@ -7771,6 +7890,62 @@ static void save_cmdline(u32 argc, char** argv) {
 }
 
 
+void schedule() {
+
+    struct queue_entry* p, * q;
+    u32 i = 0;
+    
+    q = p = queue;
+
+    while (q) {
+        if (!q->was_fuzzed && queue_cur->was_fuzzed) {
+            queue_cur = q;
+            current_entry = i;
+            break;
+        }
+        q = q->next;
+        i++;
+    }
+
+    q = queue;
+    while (q) {
+        if (!q->was_fuzzed) {
+            state_of_fuzz = EXPLORATION;
+            return;
+        }
+        q = q->next;
+    }
+    state_of_fuzz = EXPLOITATION;
+    q = queue;
+    p = queue;
+    i = 0;
+    while (p) {
+        if (p->state != 2) break;
+        i++;
+        p = p->next;
+    }
+    if (!p) {
+        p = queue;
+        while (p) {
+            p->state = 0;
+            p = p->next;
+        }
+        p = queue;
+        i = 0;
+    }
+
+    while (q) {
+        if (q->bonus > p->bonus && q->state == 0) {
+            p = q;
+            current_entry = i;
+        }
+        q = q->next;
+        i++;
+    }
+
+    queue_cur = p;
+}
+
 #ifndef AFL_LIB
 
 /* Main entry point */
@@ -8129,6 +8304,8 @@ int main(int argc, char** argv) {
         sync_fuzzers(use_argv);
 
     }
+
+    schedule();
 
     skipped_fuzz = fuzz_one(use_argv);
 

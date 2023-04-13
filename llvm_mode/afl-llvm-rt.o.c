@@ -60,6 +60,13 @@
 u8  __afl_area_initial[MAP_SIZE];
 u8* __afl_area_ptr = __afl_area_initial;
 
+u16  __afl_bonus_initial[MAP_SIZE];
+u16* __afl_bonus_ptr = __afl_bonus_initial;
+
+__thread u32 __afl_bb_ids;
+
+__thread u32 __afl_bb_bonuses;
+
 __thread u32 __afl_prev_loc;
 
 
@@ -83,6 +90,8 @@ static void __afl_map_shm(void) {
     u32 shm_id = atoi(id_str);
 
     __afl_area_ptr = shmat(shm_id, NULL, 0);
+
+    __afl_bonus_ptr = (u16*)(u8*)(__afl_area_ptr + MAP_SIZE);
 
     /* Whooooops. */
 

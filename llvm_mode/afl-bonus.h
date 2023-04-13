@@ -36,6 +36,7 @@ typedef struct VNode {
 
 	int loop_pre_bbs[MAX_LOOP_CNT];
 	unsigned int loop_cnt;
+	u8  is_loop;
 
 }BBNode;
 
@@ -121,6 +122,7 @@ int insert_bb(CFGraph* cfg, BasicBlock* BB, unsigned int cur_loc) {
 	cfg->list[bb_idx].bonus = 0;
 	cfg->list[bb_idx].firstarc = NULL;
 	cfg->list[bb_idx].loop_cnt = 0;
+	cfg->list[bb_idx].is_loop = 0;
 	cfg->list[bb_idx].calledFunNum = 0;
 
 	return bb_idx;
@@ -200,7 +202,10 @@ void dfs(CFGraph* cfg, Edge* edge, int pre_bb_idx) {
 	}
 
 	if (bb->visited) {
+
 		// loop detected
+		bb->is_loop = 1;
+
 		if (bb->loop_cnt >= MAX_LOOP_CNT) {
 			return;
 		}
@@ -322,16 +327,18 @@ void update_bonus(CFGraph* cfg) {
 
 		}
 
-		cfg->list[i].bonus = bb_n - 2 - cur_record.size();
+		cfg->list[i].bonus = bb_n - 1 - cur_record.size();
 
+		/*
 		for (int j = 1; j < bb_n; j++) {
 			if (i == j)  continue;
 			if (cur_record.find(j) == cur_record.end())
 				cfg->list[i].bonus += cfg->list[j].calledFunNum;
 		}
+		*/
 
-		if (cfg->list[i].bonus > 255) {
-			cfg->list[i].bonus = 255;
+		if (cfg->list[i].bonus > 65535) {
+			cfg->list[i].bonus = 65535;
 		}
 
 		cfg->list[0].visited = 0;
@@ -340,7 +347,7 @@ void update_bonus(CFGraph* cfg) {
 	}
 
 #ifdef AFL_BONUS_DEBUG
-	debug(cfg);
+	// debug(cfg);
 #endif // AFL_BONUS_DEBUG
 
 }

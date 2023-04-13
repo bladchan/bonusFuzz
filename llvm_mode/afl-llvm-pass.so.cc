@@ -82,6 +82,7 @@ bool AFLCoverage::runOnModule(Module &M) {
   LLVMContext &C = M.getContext();
 
   IntegerType *Int8Ty  = IntegerType::getInt8Ty(C);
+  IntegerType *Int16Ty = IntegerType::getInt16Ty(C);
   IntegerType *Int32Ty = IntegerType::getInt32Ty(C);
 
   /* Show a banner */
@@ -116,6 +117,18 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   GlobalVariable *AFLPrevLoc = new GlobalVariable(
       M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
+      0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
+
+  GlobalVariable* AFLBonusPtr =
+      new GlobalVariable(M, PointerType::get(Int8Ty, 0), false,
+                         GlobalValue::ExternalLinkage, 0, "__afl_bonus_ptr");
+
+  GlobalVariable* AFLBBId = new GlobalVariable(
+      M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_bb_ids",
+      0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
+
+  GlobalVariable* AFLBBBonus = new GlobalVariable(
+      M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_bb_bonuses",
       0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
 
   /* Instrument all the things! */
@@ -243,6 +256,103 @@ bool AFLCoverage::runOnModule(Module &M) {
       inst_blocks++;
 
     }
+
+    for (auto& BB : F) {
+
+        BasicBlock::iterator IP = BB.getFirstInsertionPt();
+        IRBuilder<> IRB(&(*IP));
+
+        int bb_idx = search_bb(&cfg, &BB);
+
+        if (bb_idx == -1) {
+            errs() << "Really???" << "\n";
+            exit(-1);
+        }
+
+        if (&BB != &F.front()) {
+
+            /* Load __afl_prev_loc */
+
+            LoadInst* PrevLoc = IRB.CreateLoad(AFLPrevLoc);
+            PrevLoc->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+            Value* PrevLocCasted = IRB.CreateZExt(PrevLoc, IRB.getInt32Ty());
+
+            /* Load __afl_bb_ids */
+
+            LoadInst* BBId = IRB.CreateLoad(AFLBBId);
+            BBId->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+            Value* BBIdCasted = IRB.CreateZExt(BBId, IRB.getInt32Ty());
+
+            /* Load __afl_bb_bonuses */
+
+            LoadInst* BBBonus = IRB.CreateLoad(AFLBBBonus);
+            BBBonus->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+            Value* BBBonusCasted = IRB.CreateZExt(BBBonus, IRB.getInt32Ty());
+
+
+            /* Load __afl_bonus_ptr */
+
+            Value* UntouchID = IRB.CreateXor(
+                IRB.CreateXor(PrevLocCasted, cfg.list[bb_idx].cur_loc)
+                , BBIdCasted);
+
+            LoadInst* BonusPtr = IRB.CreateLoad(AFLBonusPtr);
+            BonusPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+            Value* BonusPtrIdx =
+                IRB.CreateGEP(BonusPtr, UntouchID);
+
+            /* Update __afl_bonus_ptr */
+
+            Value* UntouchBonus = IRB.CreateXor(BBBonusCasted, cfg.list[bb_idx].bonus);
+
+            IRB.CreateStore(UntouchBonus, BonusPtrIdx)
+                ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+        }
+        else {
+            // In first BB, we don't need to collect untouch information!
+        }
+
+        BranchInst* BI = dyn_cast<BranchInst>(BB.getTerminator());
+
+        if (!BI) {
+            if (!cfg.list[bb_idx].outdegree) {
+                continue;
+            }
+            else {
+                errs() << BB << "\n";
+                errs() << "Impossible?! Here is a switch inst?\n";
+                exit(0);
+            }
+        }
+
+        if (BI->isUnconditional() || BI->getNumSuccessors() < 2)
+            continue;
+
+        BasicBlock* bb_left = dyn_cast<BasicBlock>(BI->getOperand(1));
+        BasicBlock* bb_right = dyn_cast<BasicBlock>(BI->getOperand(2));
+
+        int bb_idx_l = search_bb(&cfg, bb_left);
+        int bb_idx_r = search_bb(&cfg, bb_right);
+        if (bb_idx_l == -1 || bb_idx_r == -1) {
+            errs() << "Really???" << "\n";
+            exit(-1);
+        }
+
+        IRBuilder<> IRB_last(BB.getTerminator());
+
+        /* Update __afl_bb_ids */
+
+        IRB_last.CreateStore(ConstantInt::get(Int32Ty, cfg.list[bb_idx_l].cur_loc ^ cfg.list[bb_idx_r].cur_loc), AFLBBId)
+            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+        /* Update __afl_bb_bonuses */
+
+        IRB_last.CreateStore(ConstantInt::get(Int32Ty, cfg.list[bb_idx_l].bonus ^ cfg.list[bb_idx_r].bonus), AFLBBBonus)
+            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+    }
+
   }
   /* Say something nice. */
 
